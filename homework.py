@@ -8,6 +8,8 @@ import requests
 import telegram
 from dotenv import load_dotenv
 
+from exceptions import HTTPStatusNotOK, MessageNotSend
+
 load_dotenv()
 
 PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
@@ -33,72 +35,87 @@ logging.basicConfig(
 
 def send_message(bot, message):
     """Отправка сообщения."""
+    logging.info(f'Бот начал отправку сообщения: {message}.')
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logging.info(f'Сообщение: {message} -  отправлено!')
-    except Exception as error:
+    except MessageNotSend as error:
         message = (f'Отправка сообщения не удалась! По причине {error}')
         logging.error(message)
 
 
 def get_api_answer(current_timestamp):
     """Получаем ответ от Практикум API."""
+    logging.info('Подключение к Практикум API.')
     timestamp = current_timestamp or int(time.time())
     params = {'from_date': timestamp}
     response = requests.get(ENDPOINT, headers=HEADERS, params=params)
-    if response.status_code == HTTPStatus.OK:
-        return response.json()
-    raise ConnectionError('Соединение недоступено!')
+    if response.status_code != HTTPStatus.OK:
+        raise HTTPStatusNotOK('Соединение недоступно!')
+    return response.json()
 
 
 def check_response(response):
     """Проверка правильности формата ответа от Практикум API."""
-    if type(response) is not dict:
+    logging.info('Проверяем ответ на правильность формата.')
+    if not isinstance(response, dict):
         raise TypeError('Неверный тип данных, ожидается dict!')
-    elif type(response['homeworks']) is not list:
+    elif not isinstance(response['homeworks'], list):
         raise TypeError('Данные приходят не в виде списка в ответ от API')
+    elif 'homeworks' not in response:
+        logging.error('Ключ отсутствует в response API')
+        raise KeyError('Ключ отсутствует в response API')
     return response['homeworks']
 
 
 def parse_status(homework):
     """Получаем статус домашней работы."""
+    logging.info('Извлекаем данные о домашней работе.')
     homework_name = homework.get('homework_name')
     homework_status = homework.get('status')
-    if homework_status in HOMEWORK_STATUSES:
-        verdict = HOMEWORK_STATUSES[homework_status]
-        return f'Изменился статус проверки работы "{homework_name}". {verdict}'
-    raise KeyError(f'Неверный статус работы: {homework_status}')
+    if homework_status not in HOMEWORK_STATUSES:
+        raise KeyError(f'Неверный статус работы: {homework_status}')
+    verdict = HOMEWORK_STATUSES[homework_status]
+    return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
 def check_tokens():
     """Проверка переменных среды."""
+    logging.info('Проверка токенов.')
     tokens = (PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
-    if all(tokens):
-        return True
-    logging.critical('Токен отсутствует!')
-    return False
+    return all(tokens)
 
 
 def main():
     """Основная логика работы бота."""
+    if not check_tokens():
+        logging.critical('Отсутствует токен!')
+        sys.exit('Отсутствует токен!')
+
+    status_message = ''
+    error_message = ''
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     current_timestamp = int(time.time())
 
-    while check_tokens():
+    while True:
         try:
             response = get_api_answer(current_timestamp)
             homework = check_response(response)
             if len(homework) > 0:
                 message = parse_status(homework[0])
-                send_message(bot, message)
+                if status_message != message:
+                    status_message = message
+                    send_message(bot, message)
             else:
                 logging.debug('Новых статусов нет!')
             current_timestamp = response.get('current_date')
-            time.sleep(RETRY_TIME)
         except Exception as error:
             message = f'Сбой в программе: {error}'
             logging.error(message)
-            bot.send_message(TELEGRAM_CHAT_ID, message)
+            if error_message != message:
+                error_message = message
+                bot.send_message(TELEGRAM_CHAT_ID, message)
+        finally:
             time.sleep(RETRY_TIME)
 
 
