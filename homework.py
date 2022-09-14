@@ -8,7 +8,7 @@ import requests
 import telegram
 from dotenv import load_dotenv
 
-from exceptions import HTTPStatusNotOK, MessageNotSend
+from exceptions import HTTPStatusNotOK
 
 load_dotenv()
 
@@ -39,19 +39,28 @@ def send_message(bot, message):
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logging.info(f'Сообщение: {message} -  отправлено!')
-    except MessageNotSend as error:
+    except telegram.error.TelegramError as error:
         message = (f'Отправка сообщения не удалась! По причине {error}')
         logging.error(message)
 
 
 def get_api_answer(current_timestamp):
     """Получаем ответ от Практикум API."""
-    logging.info('Подключение к Практикум API.')
     timestamp = current_timestamp or int(time.time())
     params = {'from_date': timestamp}
-    response = requests.get(ENDPOINT, headers=HEADERS, params=params)
+    try:
+        response = requests.get(ENDPOINT, headers=HEADERS, params=params)
+        logging.info(f'Выполняем запрос к API: {ENDPOINT}')
+    except Exception as error:
+        status_code = response.status_code
+        resone = response.reason
+        message = (f'Сайт не отвечает, {error}!'
+                   f'Код ответа: {status_code}-{resone}'
+                   f'Параметры: {params}')
+        logging.error(message)
     if response.status_code != HTTPStatus.OK:
-        raise HTTPStatusNotOK('Соединение недоступно!')
+        resone = response.reason
+        raise HTTPStatusNotOK('Сайт не отвечает! По причине - {resone}.')
     return response.json()
 
 
@@ -60,11 +69,10 @@ def check_response(response):
     logging.info('Проверяем ответ на правильность формата.')
     if not isinstance(response, dict):
         raise TypeError('Неверный тип данных, ожидается dict!')
+    elif 'homeworks' not in response:
+        raise KeyError('Ключ отсутствует в response API')
     elif not isinstance(response['homeworks'], list):
         raise TypeError('Данные приходят не в виде списка в ответ от API')
-    elif 'homeworks' not in response:
-        logging.error('Ключ отсутствует в response API')
-        raise KeyError('Ключ отсутствует в response API')
     return response['homeworks']
 
 
@@ -73,8 +81,13 @@ def parse_status(homework):
     logging.info('Извлекаем данные о домашней работе.')
     homework_name = homework.get('homework_name')
     homework_status = homework.get('status')
+
+    if not homework_name:
+        raise KeyError('Данные о домашних работах отсутствуют!')
+
     if homework_status not in HOMEWORK_STATUSES:
         raise KeyError(f'Неверный статус работы: {homework_status}')
+
     verdict = HOMEWORK_STATUSES[homework_status]
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
